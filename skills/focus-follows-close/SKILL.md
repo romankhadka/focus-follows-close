@@ -1,13 +1,16 @@
 ---
 name: focus-follows-close
-description: Install, verify, or troubleshoot the Hammerspoon "focus-follows-close" macOS window behavior (Linux/Windows-style focus-to-next-window when a window is closed). Use when setting up a new Mac, replicating this config, toggling/tuning it, or diagnosing why it isn't working. macOS + Hammerspoon only.
+description: Install, verify, or troubleshoot the Hammerspoon "focus-follows-close" macOS behavior — when you close an app's LAST window, focus moves to the next most-recently-active window (the one gap macOS leaves). Use when setting up a new Mac, replicating this config, toggling/tuning it, or diagnosing why it isn't working. macOS + Hammerspoon only.
 ---
 
 # focus-follows-close — setup & management skill
 
-This skill installs and manages a Hammerspoon script that makes macOS move focus
-to the next most-recently-active window when you close a window (Linux/Windows
-behavior macOS omits). Source repo: `https://github.com/romankhadka/focus-follows-close`.
+This skill installs and manages a Hammerspoon script that fills the one
+window-focus gap macOS leaves: when you close an app's **last** window, it
+focuses the next most-recently-active window instead of stranding you on a
+windowless app. Every other case (closing one of several windows, switching
+apps, Spotlight) is left to macOS — so there is no flicker. Source repo:
+`https://github.com/romankhadka/focus-follows-close`.
 
 The config file is `focus-follows-close.lua`. The single source of truth for the
 machine is `~/.hammerspoon/init.lua` (or a `~/.hammerspoon/focus-follows-close.lua`
@@ -73,9 +76,10 @@ If `hs` reports `can't access Hammerspoon message port`, the config hasn't loade
 with `hs.ipc` yet — relaunch Hammerspoon (the first load can't be triggered via
 the CLI), then retry.
 
-Then have the user do a real test: with a couple of apps/windows open, close one
-window and confirm focus lands on the next window they were using. Switching apps
-and launching via Spotlight should be unaffected.
+Then have the user do a real test: with two apps open (each one window), close
+the last window of the frontmost one and confirm focus lands on the other app's
+window. Closing one of several windows of the same app, switching apps, and
+launching via Spotlight should behave exactly like native macOS.
 
 ## Manage / tune
 
@@ -89,16 +93,22 @@ auto-reloads). Toggle on/off at runtime with **⌘⌥⌃F**, or:
 
 ## Troubleshooting
 
-- **Nothing happens on close** → Accessibility not granted (check `accessibilityState()`).
-- **Yanked out of an app you switched to** → an app reporting an odd name; add it
-  to `M.skipTriggerFrom`. (The design only acts when the closed window's app is
-  still frontmost, so this should be rare.)
-- **A brief one-frame flicker when closing a window whose app has other windows**
-  → expected and by design. macOS raises a same-app window before any event
-  reaches the script, so the script can only correct it a frame later. Don't try
-  to "fix" it by intercepting ⌘W — that breaks close-tab semantics. Leave it.
+- **Nothing happens when closing an app's last window** → Accessibility not
+  granted (check `accessibilityState()`).
+- **It focuses an app you never want focused** → add it to `M.skipFocusInto`.
+- **A launcher/panel close triggers it** → add that app to `M.skipTriggerFrom`.
 - **Edits don't apply** → menu-bar icon → Reload Config (auto-reload watcher may
   have been removed or your config has its own).
 
-See the repo `README.md` for the full design rationale (MRU tracking, delayed
-commit, the app-match guard, and why window objects beat IDs for performance).
+## Design note
+
+This is intentionally the *windowless-only* version: it acts solely when an app
+loses its last window. It does NOT try to override macOS when an app still has
+other windows — doing that causes a one-frame flicker (macOS raises a same-app
+window before any script can react). The repo's `main` branch is this
+flicker-free version; the earlier, more aggressive "next window overall, even
+across apps" implementation is preserved on the `roman/flicker-prone-original`
+branch for reference. Don't reintroduce the cross-app override on `main`.
+
+See the repo `README.md` for the full rationale (MRU tracking, the windowless
+check, the app-match guard, and why window objects beat IDs for performance).

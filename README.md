@@ -1,8 +1,8 @@
 # focus-follows-close
 
-Linux/Windows-style window focus on macOS, via [Hammerspoon](https://www.hammerspoon.org/).
+Fills the one window-focus gap macOS leaves, via [Hammerspoon](https://www.hammerspoon.org/).
 
-**When you close a window, focus moves to the next most-recently-active window — regardless of which app it belongs to.** No more being left staring at a windowless, still-"active" app, and no manual click to get back to work.
+**When you close an app's last window, focus moves to the next most-recently-active window** instead of leaving you stranded on a windowless, still-"active" app. Everything else is left to macOS — so there's no flicker and no surprises.
 
 ---
 
@@ -10,27 +10,29 @@ Linux/Windows-style window focus on macOS, via [Hammerspoon](https://www.hammers
 
 macOS is **application-centric**; Linux and Windows are **window-centric**.
 
-- **Windows / Linux:** focus belongs to a *window*. Close it and the window manager promotes the next window in your recent-use order — often a different app.
-- **macOS:** focus belongs to an *application*. Close a window and the app stays frontmost even with **zero** windows (the menu bar still shows its name). Focus never crosses the app boundary for you. Close the last window of an app and you're left with nothing focused, having to manually switch.
+- Close one of several windows of an app → macOS focuses that app's next window. Fine, and this script never touches it.
+- Close an app's **last** window → macOS keeps the now-windowless app frontmost (the menu bar still shows its name) and focuses **nothing**. You're left having to manually switch to get back to work.
 
-There is no native System Settings toggle for this — it's baked into how `NSApplication` activation works. This script adds the missing layer on top.
+There's no native setting for that last case. This script handles exactly that — and only that.
 
 ## What it does
 
-On every window close, it focuses the **next most-recently-active window** — the one you'd naturally expect to fall back to — even if that's a different app. App identity is irrelevant: if the next-most-recent window happens to be another window of the *same* app, it goes there; if it's a different app, it goes there.
+On closing an app's **last** window, it focuses the **next most-recently-active window** — the window you were using before. That's the single case macOS drops the ball on. In every other case it does nothing and lets macOS do its native thing.
 
 | You do | What happens |
 |---|---|
-| Close a window | Focus moves to the window you used **just before** it (MRU order), same app or not |
-| Close one of several windows of an app | Focus follows real recency — not whichever window macOS reflexively raises |
-| Switch apps / launch via Spotlight | **Nothing** — the script stays out of the way (see the app-match guard below) |
-| Close a window when the only other windows are on a different desktop/Space | **Nothing** — it never yanks you to another Space (toggleable) |
+| Close an app's **last** window | Focus moves to the window you used **just before** it (MRU order) |
+| Close **one of several** windows of an app | Left to macOS — it focuses the app's next window |
+| Switch apps / launch via Spotlight | Left to macOS — the script stays out of the way |
+| The next-most-recent window is on a different desktop/Space | Skipped — it never yanks you to another Space (toggleable) |
+
+Because it never overrides macOS's same-app behavior, there is **no flicker** — the script only acts in the windowless case, where macOS raises nothing to flash.
 
 Toggle the whole thing on/off any time with **⌘⌥⌃F**.
 
 ## Requirements
 
-- macOS (developed against Sequoia; uses `hs.spaces`, available in Hammerspoon ≥ 0.9.90)
+- macOS (uses `hs.spaces`, available in Hammerspoon ≥ 0.9.90)
 - [Hammerspoon](https://www.hammerspoon.org/) (tested with 1.1.1)
 - **Accessibility** permission granted to Hammerspoon (the script is inert without it)
 
@@ -77,7 +79,7 @@ Then in Claude Code: *"set up focus-follows-close"* (or invoke the skill). See t
 
 ## Verify it's working
 
-Open Chrome + a terminal + another app on one Space, with the terminal frontmost. Close the terminal window with ⌘W → focus should land on the next window you were using, not leave you in a windowless app. Switching apps and launching via Spotlight should feel completely normal.
+Open two apps with one window each (say Notes + Safari), Notes frontmost. Close the Notes window with ⌘W → focus should land on Safari instead of leaving you in windowless Notes. Closing one of several windows of the same app, switching apps, and launching via Spotlight should all behave exactly as native macOS.
 
 From the CLI (Hammerspoon's `hs` tool, enabled by this config):
 
@@ -100,25 +102,21 @@ All knobs live at the top of the file. Edit and save — the config auto-reloads
 
 ## How it works
 
-Four ideas carry the whole thing:
+Three small ideas, and a deliberate decision to do *less*:
 
-1. **An MRU (most-recently-used) window list, built from focus events.** macOS z-order is unreliable for "what did I use last" because the OS reshuffles it on close, so the script tracks activation order itself by listening to `windowFocused`.
+1. **An MRU (most-recently-used) window list, built from focus events.** macOS z-order is an unreliable record of "what did I use last," so the script tracks activation order itself by listening to `windowFocused`, storing window *objects* (validating an object is sub-millisecond; resolving an ID back to a window via `hs.window.get` re-enumerates everything and costs ~57 ms).
 
-2. **Delayed commit (the correctness trick).** When you close a window, macOS *instantly* raises another window of the same app and focuses it — which would pollute the MRU before the script reads it. So focus events are held "pending" for ~180 ms before they join the MRU. macOS's reflexive auto-promotion fires in the same instant as the close, so it's still pending and uncommitted when the close arrives — and the close cancels it. The committed MRU stays clean, so the script picks the window *you* actually used last. (A same-app window still wins when it is genuinely the most-recent — because that ordering was committed by real use, not by macOS's reflex.)
+2. **A windowless check.** It only acts when the app whose window you closed now has **no other standard window**. If the app still has windows, it returns immediately and lets macOS focus the next one. The check excludes the just-closed window's id to dodge a teardown timing race.
 
-3. **The app-match guard (the safety trick).** The script only acts when the closed window's app is still the frontmost app. When you switch apps or launch via Spotlight, the destroyed window (the old app, or the launcher) belongs to a *different* app than the one now frontmost — so the script does nothing and leaves focus where the OS put it. This is what keeps it from yanking you back out of an app you just switched to.
+3. **An app-match guard.** It only acts when the closed window's app is still the frontmost app. When you switch apps or launch via Spotlight, the destroyed window (the old app, or the launcher) belongs to a *different* app than the one now frontmost — so the script does nothing.
 
-4. **Window objects, not IDs (the performance trick).** Resolving a window ID back to a window (`hs.window.get`) re-enumerates every window and costs ~57 ms per call — enough to make the focus swap visibly choppy. Storing the window *objects* and validating them directly is sub-millisecond, so the swap lands within a single display frame.
-
-### Honest limitation
-
-There is an unavoidable sub-frame flicker in one case: closing a window when its app has *other* windows. macOS raises one of those other windows *as part of* the close, before any event reaches the script — so the script can only ever respond *after*. At ~1 ms response time the swap usually lands in the same ~16 ms display frame (no visible flash), but you may occasionally catch a single frame of the intermediate window. Eliminating it entirely would require intercepting ⌘W and closing windows manually, which breaks "close tab" semantics in browsers/editors/terminals — a worse problem than a rare one-frame flicker. So it's left as-is by design.
+**Why there's no flicker:** the flicker problem only exists when you override macOS's reflex of raising another same-app window on close. This script never does that — it stays out of the multi-window case entirely and only fills the windowless gap, where macOS raises nothing. No override, nothing to flash.
 
 ## Troubleshooting
 
-- **Nothing happens on close.** Check Accessibility is granted: `hs -c "tostring(hs.accessibilityState())"` should be `true`. The script's window tracking is inert without it.
-- **It pulled me out of an app I switched to.** Shouldn't happen with the app-match guard — but if some app reports an unexpected name, add it to `M.skipTriggerFrom`.
+- **Nothing happens when I close an app's last window.** Check Accessibility is granted: `hs -c "tostring(hs.accessibilityState())"` should be `true`. The script's window tracking is inert without it.
 - **It focuses an app I never want focused.** Add it to `M.skipFocusInto`.
+- **A close from some launcher/panel triggers it.** Add that app to `M.skipTriggerFrom`.
 - **Editing the file doesn't take effect.** The config auto-reloads on save; if not, click the Hammerspoon menu-bar icon → Reload Config. (The auto-reloader keeps a reference so it isn't garbage-collected — see the note in the source.)
 
 ## Files
