@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>focus-follows-close — the one focus gap macOS leaves</title>
+<meta name="description" content="Close an app's last window on macOS and focus goes nowhere. This Hammerspoon script moves it to the window you used before — and does nothing else." />
+<meta name="color-scheme" content="light dark" />
+<link rel="canonical" href="https://focus-follows-close.romn.dev/" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://focus-follows-close.romn.dev/" />
+<meta property="og:title" content="focus-follows-close" />
+<meta property="og:description" content="Close an app's last window on macOS and focus goes nowhere. This fills exactly that gap — and nothing else." />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230071E3'/%3E%3Crect x='7' y='9' width='11' height='9' rx='2' fill='white' opacity='.45'/%3E%3Crect x='14' y='15' width='11' height='9' rx='2' fill='white'/%3E%3C/svg%3E" />
+
+<style>
+/* ══════════════════════════════════════════════════════════════
+   focus-follows-close — landing page
+
+   The subject is a macOS behaviour, so the page borrows macOS's
+   own vocabulary: system greys, one blue, real window chrome.
+   The demo below is a working model of the exact decision the
+   script makes — including the cases where it deliberately does
+   nothing.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg:       #F5F5F7;
+  --bg-2:     #EDEDF0;
+  --surface:  #FFFFFF;
+  --raised:   #FBFBFD;
+  --ink:      #1D1D1F;
+  --ink-2:    #6E6E73;
+  --ink-3:    #98989D;
+  --rule:     rgba(0, 0, 0, 0.11);
+  --rule-2:   rgba(0, 0, 0, 0.22);
+  --accent:   #0071E3;
+  --accent-2: #0058B0;
+  --accent-soft: rgba(0, 113, 227, 0.09);
+  --warn:     #C7521A;
+  --good:     #1E7A44;
+  --shadow:   0 1px 2px rgba(0,0,0,.05), 0 12px 34px -14px rgba(0,0,0,.22);
+  --win-shadow: 0 2px 6px rgba(0,0,0,.14), 0 18px 44px -14px rgba(0,0,0,.42);
+
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --measure: 34rem;
+  --gutter: clamp(1.15rem, 4.5vw, 3.25rem);
+  --ease: cubic-bezier(.2, .8, .3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:       #0B0B0D;
+    --bg-2:     #131316;
+    --surface:  #1A1A1D;
+    --raised:   #202024;
+    --ink:      #F5F5F7;
+    --ink-2:    #A1A1A8;
+    --ink-3:    #6E6E77;
+    --rule:     rgba(255, 255, 255, 0.12);
+    --rule-2:   rgba(255, 255, 255, 0.24);
+    --accent:   #2997FF;
+    --accent-2: #66B4FF;
+    --accent-soft: rgba(41, 151, 255, 0.14);
+    --warn:     #FF9F6B;
+    --good:     #6FD498;
+    --shadow:   0 1px 2px rgba(0,0,0,.5), 0 14px 40px -16px rgba(0,0,0,.8);
+    --win-shadow: 0 2px 6px rgba(0,0,0,.5), 0 20px 50px -16px rgba(0,0,0,.85);
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--sans); font-size: 17px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.028em; text-wrap: balance; }
+p { margin: 0; text-wrap: pretty; }
+a { color: inherit; text-underline-offset: .18em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+.skip { position: fixed; top: 0; left: 0; z-index: 99; transform: translateY(-120%); background: var(--accent); color: #fff; padding: .7rem 1rem; border-radius: 0 0 .5rem 0; font-size: .9rem; text-decoration: none; font-weight: 600; }
+.skip:focus { transform: translateY(0); }
+
+.shell { max-width: 74rem; margin-inline: auto; padding-inline: var(--gutter); }
+.eyebrow { font-size: .7rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin: 0; }
+
+/* ── masthead ───────────────────────────────────────────────── */
+
+.masthead { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1.4rem; }
+.wordmark { display: inline-flex; align-items: center; gap: .55rem; font-size: 1.02rem; font-weight: 600; letter-spacing: -.02em; text-decoration: none; font-family: var(--mono); }
+.wordmark svg { width: 1.4rem; height: 1.4rem; border-radius: .35rem; flex: 0 0 auto; }
+.masthead nav { display: flex; gap: 1.5rem; font-size: .875rem; color: var(--ink-2); }
+.masthead nav a { text-decoration: none; }
+.masthead nav a:hover { color: var(--accent); }
+@media (max-width: 50rem) { .masthead nav { display: none; } }
+
+/* ── hero ───────────────────────────────────────────────────── */
+
+.hero { padding-block: clamp(2.2rem, 6vw, 4rem) clamp(1.5rem, 3vw, 2.5rem); text-align: center; }
+.hero h1 { font-size: clamp(2.3rem, 6vw, 4rem); line-height: 1.05; margin: 1rem auto .1rem; max-width: 18ch; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero-lede { font-size: clamp(1.05rem, 1.9vw, 1.28rem); color: var(--ink-2); max-width: 40rem; margin: 1.2rem auto 0; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: .65rem; justify-content: center; margin-top: 1.8rem; }
+.button { display: inline-flex; align-items: center; gap: .45rem; font-size: .92rem; font-weight: 550; padding: .68rem 1.2rem; border-radius: 100px; text-decoration: none; border: 1px solid transparent; cursor: pointer; font-family: inherit; transition: background-color .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease); }
+.button-primary { background: var(--accent); color: #fff; }
+.button-primary:hover { background: var(--accent-2); }
+.button-quiet { border-color: var(--rule-2); color: var(--ink); }
+.button-quiet:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* ── the demo ───────────────────────────────────────────────── */
+
+.demo { padding-bottom: clamp(3rem, 7vw, 5rem); }
+.stage-grid { display: grid; gap: 1.1rem; align-items: start; }
+@media (min-width: 62rem) { .stage-grid { grid-template-columns: minmax(0, 1fr) 17rem; } }
+.stage-grid > * { min-width: 0; }
+
+.mac {
+  border-radius: .85rem; overflow: hidden; border: 1px solid var(--rule);
+  box-shadow: var(--shadow); background: #0d1b3d;
+}
+.mac:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.mac[data-focused="1"] { box-shadow: var(--shadow), 0 0 0 2px var(--accent); }
+
+.mac-menubar {
+  display: flex; align-items: center; gap: 1.1rem; height: 1.75rem; padding: 0 .85rem;
+  background: rgba(255,255,255,.16); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  font-size: .68rem; color: rgba(255,255,255,.92); border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.mac-menubar .apple { font-size: .82rem; line-height: 1; }
+.mac-menubar .front { font-weight: 700; }
+.mac-menubar .spacer { margin-left: auto; }
+.mac-menubar .dim { opacity: .62; font-weight: 400; }
+
+/* the desktop */
+.desktop {
+  position: relative; aspect-ratio: 16 / 10; overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 78% 8%, #4A6FD4 0%, transparent 55%),
+    radial-gradient(110% 80% at 12% 88%, #8E4FB8 0%, transparent 52%),
+    linear-gradient(168deg, #16255C 0%, #101A3E 50%, #0A0F26 100%);
+}
+.no-focus-flag {
+  position: absolute; left: 50%; bottom: 5%; transform: translateX(-50%);
+  background: rgba(0,0,0,.62); color: #FFD9C2; border: 1px solid rgba(255,190,150,.4);
+  padding: .3rem .7rem; border-radius: 100px; font-size: .68rem; white-space: nowrap;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+
+.win {
+  position: absolute; border-radius: .5rem; overflow: hidden;
+  background: var(--surface); border: 1px solid rgba(0,0,0,.3);
+  box-shadow: var(--win-shadow);
+  transition: box-shadow .16s var(--ease), transform .16s var(--ease), opacity .16s var(--ease);
+  display: flex; flex-direction: column; text-align: left;
+}
+.win.dim { filter: saturate(.72) brightness(.94); }
+.win.focused { z-index: 5; }
+.win.closing { opacity: 0; transform: scale(.965); pointer-events: none; }
+
+.win-bar {
+  display: flex; align-items: center; gap: .34rem; padding: .3rem .45rem;
+  background: var(--bg-2); border-bottom: 1px solid var(--rule); flex: 0 0 auto;
+}
+.win.focused .win-bar { background: var(--raised); }
+.light { width: .58rem; height: .58rem; border-radius: 50%; background: var(--rule-2); border: 0; padding: 0; flex: 0 0 auto; }
+/* macOS colours a background window's lights on hover too, and its close
+   button really does close it — so this demo does the same. */
+.win.focused .light.red, .win:hover .light.red { background: #FF5F57; cursor: pointer; }
+.win.focused .light.amber, .win:hover .light.amber { background: #FEBC2E; }
+.win.focused .light.green, .win:hover .light.green { background: #28C840; }
+.light.red:hover { filter: brightness(1.15); }
+.light.red:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.win-title { font-size: .62rem; font-weight: 600; color: var(--ink-2); margin-inline: auto; padding-right: 1.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.win.focused .win-title { color: var(--ink); }
+.win-body { flex: 1 1 auto; padding: .5rem .55rem; display: flex; flex-direction: column; gap: .28rem; overflow: hidden; }
+.win-body i { display: block; height: .28rem; border-radius: 2px; background: var(--rule); }
+.win-app {
+  position: absolute; right: .4rem; bottom: .35rem;
+  font-size: .55rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* controls */
+.controls { display: flex; flex-wrap: wrap; gap: .55rem 1rem; align-items: center; margin-top: .9rem; font-size: .84rem; color: var(--ink-2); }
+.switch { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.track { width: 2.4rem; height: 1.4rem; border-radius: 100px; background: var(--rule-2); position: relative; transition: background-color .16s var(--ease); flex: 0 0 auto; }
+.track::after { content: ""; position: absolute; top: 2px; left: 2px; width: calc(1.4rem - 4px); height: calc(1.4rem - 4px); border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .16s var(--ease); }
+.switch input:checked + .track { background: var(--good); }
+.switch input:checked + .track::after { transform: translateX(1rem); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 3px; }
+.switch b { font-weight: 600; color: var(--ink); }
+.ghost { border: 1px solid var(--rule-2); background: transparent; color: var(--ink-2); font-family: inherit; font-size: .76rem; font-weight: 600; padding: .35rem .65rem; border-radius: 100px; cursor: pointer; }
+.ghost:hover { color: var(--accent); border-color: var(--accent); }
+kbd { font-family: var(--mono); font-size: .8em; font-weight: 550; padding: .16em .4em; border-radius: .3rem; border: 1px solid var(--rule-2); border-bottom-width: 2px; background: var(--surface); color: var(--ink); }
+
+/* MRU panel */
+.side { border: 1px solid var(--rule); border-radius: .7rem; background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
+.side h3 { font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); padding: .8rem .9rem .5rem; font-weight: 600; }
+.mru { list-style: none; margin: 0; padding: 0 .55rem .6rem; display: flex; flex-direction: column; gap: .25rem; }
+.mru li { display: flex; align-items: center; gap: .55rem; padding: .42rem .5rem; border-radius: .4rem; font-size: .8rem; background: var(--raised); border: 1px solid transparent; }
+.mru li.top { border-color: var(--accent); background: var(--accent-soft); }
+.mru li .n { font-family: var(--mono); font-size: .66rem; color: var(--ink-3); width: 1rem; flex: 0 0 auto; }
+.mru li .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mru li .a { margin-left: auto; font-size: .66rem; color: var(--ink-3); flex: 0 0 auto; }
+.mru .empty { padding: .5rem; font-size: .8rem; color: var(--ink-3); }
+.log { border-top: 1px solid var(--rule); padding: .75rem .9rem; font-size: .78rem; line-height: 1.5; color: var(--ink-2); min-height: 5.5rem; }
+.log b { color: var(--ink); font-weight: 600; display: block; margin-bottom: .15rem; }
+.log.act b { color: var(--good); }
+.log.idle b { color: var(--warn); }
+.log.native b { color: var(--ink-2); }
+
+/* ── sections ───────────────────────────────────────────────── */
+
+section { padding-block: clamp(3.5rem, 8vw, 6.5rem); }
+.band { background: var(--bg-2); border-block: 1px solid var(--rule); }
+.head { max-width: var(--measure); margin-bottom: clamp(2rem, 4vw, 3rem); }
+.head h2 { font-size: clamp(1.9rem, 4.4vw, 2.9rem); line-height: 1.08; margin-block: .7rem .85rem; }
+.head p { color: var(--ink-2); font-size: 1.04rem; }
+.prose { max-width: var(--measure); color: var(--ink-2); display: flex; flex-direction: column; gap: 1.05rem; }
+.prose strong { color: var(--ink); font-weight: 600; }
+code, .ic { font-family: var(--mono); font-size: .86em; color: var(--ink); background: var(--accent-soft); padding: .1em .35em; border-radius: .25rem; }
+
+/* the behaviour table */
+.matrix { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: .7rem; overflow: hidden; }
+@media (min-width: 46rem) { .matrix { grid-template-columns: 1fr 1.35fr; } }
+.matrix .cell { background: var(--surface); padding: 1rem 1.15rem; }
+.matrix .cell.h { background: var(--bg-2); font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.matrix .cell b { display: block; font-weight: 600; font-size: .96rem; }
+.matrix .cell p { font-size: .92rem; color: var(--ink-2); margin-top: .2rem; }
+.tag { display: inline-flex; align-items: center; gap: .35rem; font-size: .68rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: .16rem .45rem; border-radius: .3rem; }
+.tag.acts { color: var(--good); background: rgba(30,122,68,.12); }
+.tag.native { color: var(--ink-2); background: var(--rule); }
+@media (prefers-color-scheme: dark) { .tag.acts { background: rgba(111,212,152,.14); } }
+
+/* how it works */
+.ideas { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.idea { border: 1px solid var(--rule); border-radius: .7rem; background: var(--surface); padding: 1.35rem 1.25rem; display: flex; flex-direction: column; gap: .5rem; }
+.idea .n { font-family: var(--mono); font-size: .7rem; color: var(--accent); }
+.idea h3 { font-size: 1rem; }
+.idea p { font-size: .92rem; color: var(--ink-2); }
+
+.nums { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: .7rem; overflow: hidden; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin-top: 2.5rem; }
+.num { background: var(--surface); padding: 1.2rem 1.1rem; display: flex; flex-direction: column; gap: .2rem; }
+.num b { font-family: var(--mono); font-size: 1.5rem; font-weight: 600; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.num span { font-size: .8rem; color: var(--ink-2); line-height: 1.4; }
+
+/* config table — wide content scrolls in its own box, never the page */
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: .7rem; background: var(--surface); }
+table { width: 100%; min-width: 34rem; border-collapse: collapse; font-size: .88rem; }
+.table-wrap tr:last-child td { border-bottom: 0; }
+th, td { text-align: left; padding: .65rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+td:first-child { font-family: var(--mono); font-size: .82rem; white-space: nowrap; }
+td.d { color: var(--ink-2); }
+
+/* install */
+.paths { display: grid; gap: 1.1rem; align-items: start; }
+@media (min-width: 54rem) { .paths { grid-template-columns: 1fr 1fr; } }
+.path { border: 1px solid var(--rule); border-radius: .8rem; padding: 1.45rem 1.35rem; background: var(--surface); display: flex; flex-direction: column; gap: .85rem; align-items: flex-start; min-width: 0; max-width: 100%; }
+.path > * { max-width: 100%; }
+.path.lead { border-color: var(--accent); }
+.path h3 { font-size: 1.08rem; }
+.path p { font-size: .92rem; color: var(--ink-2); }
+.path ol { margin: 0; padding-left: 1.15rem; font-size: .9rem; color: var(--ink-2); display: flex; flex-direction: column; gap: .35rem; }
+.cmd { display: flex; align-items: flex-start; gap: .7rem; width: 100%; padding: .6rem .6rem .6rem .85rem; border: 1px solid var(--rule); border-radius: .55rem; background: var(--raised); font-family: var(--mono); font-size: .8rem; overflow: hidden; }
+.cmd code { background: none; padding: 0; white-space: pre; overflow-x: auto; min-width: 0; flex: 1 1 auto; color: var(--ink); line-height: 1.6; }
+.copy { flex: 0 0 auto; border: 1px solid var(--rule); background: transparent; color: var(--ink-2); font-family: var(--sans); font-size: .68rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: .3rem .5rem; border-radius: .35rem; cursor: pointer; }
+.copy:hover, .copy[data-done="1"] { color: var(--accent); border-color: var(--accent); }
+
+footer { border-top: 1px solid var(--rule); padding-block: 2.5rem 3.5rem; font-size: .86rem; color: var(--ink-3); }
+.foot-row { display: flex; flex-wrap: wrap; gap: 1rem 2rem; justify-content: space-between; align-items: center; }
+footer a { color: var(--ink-2); text-decoration: none; }
+footer a:hover { color: var(--accent); }
+.foot-links { display: flex; flex-wrap: wrap; gap: 1.35rem; }
+.colophon { margin-top: 1.4rem; max-width: 44rem; line-height: 1.6; font-size: .82rem; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="shell">
+  <header class="masthead">
+    <a class="wordmark" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><rect x="7" y="9" width="11" height="9" rx="2" fill="#fff" opacity=".45"/><rect x="14" y="15" width="11" height="9" rx="2" fill="#fff"/></svg>
+      focus-follows-close
+    </a>
+    <nav>
+      <a href="#problem">The gap</a>
+      <a href="#scope">What it touches</a>
+      <a href="#how">How</a>
+      <a href="#config">Config</a>
+      <a href="#install">Install</a>
+    </nav>
+  </header>
+</div>
+
+<main id="main">
+  <div class="shell">
+    <div class="hero">
+      <p class="eyebrow">macOS · Hammerspoon · 203 lines of Lua</p>
+      <h1>Close the last window. Land <em>somewhere useful</em>.</h1>
+      <p class="hero-lede">
+        macOS is application-centric. Close an app's last window and it keeps that
+        now-empty app frontmost, focusing nothing at all. This moves focus to the
+        window you were using before — and touches nothing else.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#install">Install it</a>
+        <a class="button button-quiet" href="https://github.com/romankhadka/focus-follows-close">View source</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="shell demo">
+    <div class="stage-grid">
+      <div>
+        <div class="mac" id="mac" tabindex="0" role="application"
+             aria-label="Interactive macOS desktop. Click a window to focus it, click its red button to close it. Press w to close the focused window, f to toggle the script.">
+          <div class="mac-menubar">
+            <span class="apple" aria-hidden="true">&#63743;</span>
+            <span class="front" id="front-app">Notes</span>
+            <span class="dim">File</span><span class="dim">Edit</span><span class="dim">Window</span>
+            <span class="spacer"></span>
+            <span class="dim" id="mac-clock">—</span>
+          </div>
+          <div class="desktop" id="desktop"></div>
+        </div>
+
+        <div class="controls">
+          <label class="switch">
+            <input type="checkbox" id="enabled" checked />
+            <span class="track"></span>
+            <b>focus-follows-close</b>
+          </label>
+          <span>Click a window to focus it, its red dot to close it. Or press <kbd>W</kbd> to close, <kbd>←</kbd><kbd>→</kbd> to switch, <kbd>F</kbd> to toggle.</span>
+          <button class="ghost" id="reset" type="button">Reset desktop</button>
+        </div>
+        <p style="margin-top:.5rem;font-size:.8rem;color:var(--ink-3)">
+          On your Mac those are <kbd>⌘W</kbd> and <kbd>⌘⌥⌃F</kbd>. This demo uses bare keys so it
+          cannot close your browser tab.
+        </p>
+      </div>
+
+      <aside class="side">
+        <h3>MRU window stack</h3>
+        <ul class="mru" id="mru"></ul>
+        <div class="log idle" id="log"><b>Ready</b>Close Notes' only window and watch where focus goes.</div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ══ the problem ══ -->
+  <section id="problem" class="band">
+    <div class="shell">
+      <div class="head">
+        <p class="eyebrow">The gap</p>
+        <h2>One case, and macOS has no setting for it</h2>
+        <p>
+          Windows and most Linux desktops are window-centric: focus belongs to a
+          window. macOS gives it to an application, which is usually fine and
+          occasionally leaves you nowhere.
+        </p>
+      </div>
+      <div class="prose">
+        <p>
+          Close one of several windows of an app and macOS focuses that app's next
+          window. That is correct, and this script never touches it.
+        </p>
+        <p>
+          Close an app's <strong>last</strong> window and macOS keeps the windowless
+          app frontmost — the menu bar still reads its name — while focusing
+          <strong>nothing</strong>. Your next keystroke goes to an app with no window
+          to put it in, and you have to reach for the mouse or Command-Tab to get back
+          to work. There is no native preference for this. That is the entire gap this
+          fills.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ scope ══ -->
+  <section id="scope">
+    <div class="shell">
+      <div class="head">
+        <p class="eyebrow">What it touches</p>
+        <h2>Almost always, nothing</h2>
+        <p>
+          The restraint is the design. Because it never overrides macOS's own
+          reflexes, there is nothing to fight and nothing to flash.
+        </p>
+      </div>
+      <div class="matrix">
+        <div class="cell h">You do</div>
+        <div class="cell h">What happens</div>
+
+        <div class="cell"><b>Close an app's last window</b></div>
+        <div class="cell"><span class="tag acts">script acts</span><p>Focus moves to the window you used just before it, in MRU order.</p></div>
+
+        <div class="cell"><b>Close one of several windows</b></div>
+        <div class="cell"><span class="tag native">macOS</span><p>Left alone — macOS focuses the app's next window itself.</p></div>
+
+        <div class="cell"><b>Switch apps, or launch from Spotlight</b></div>
+        <div class="cell"><span class="tag native">macOS</span><p>Left alone. The closed window belongs to a different app than the one now frontmost, so the guard declines.</p></div>
+
+        <div class="cell"><b>The next window is on another Space</b></div>
+        <div class="cell"><span class="tag native">macOS</span><p>Skipped, so a close never yanks you to another desktop. Toggle with <span class="ic">sameSpaceOnly</span>.</p></div>
+      </div>
+
+      <div class="prose" style="margin-top:2rem">
+        <p>
+          <strong>Why there is no flicker.</strong> Flicker comes from overriding
+          macOS's habit of raising another same-app window on close: it raises one,
+          you raise another, and the screen shows both. This script stays out of the
+          multi-window case entirely and only fills the windowless one — where macOS
+          raises nothing, so there is nothing to flash.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ how ══ -->
+  <section id="how" class="band">
+    <div class="shell">
+      <div class="head">
+        <p class="eyebrow">How it works</p>
+        <h2>Three small ideas</h2>
+        <p>Plus one measurement that decided the data structure.</p>
+      </div>
+      <div class="ideas">
+        <div class="idea">
+          <span class="n">01</span>
+          <h3>Its own MRU list</h3>
+          <p>macOS z-order is an unreliable record of what you used last, so the script keeps its own order from <span class="ic">windowFocused</span> events — up to 60 windows.</p>
+        </div>
+        <div class="idea">
+          <span class="n">02</span>
+          <h3>A windowless check</h3>
+          <p>It acts only when the app whose window you closed has no other standard window left. The check excludes the just-closed window's id, to dodge a teardown timing race.</p>
+        </div>
+        <div class="idea">
+          <span class="n">03</span>
+          <h3>An app-match guard</h3>
+          <p>It acts only when the closed window's app is still frontmost. App switches and Spotlight launches fail that test, so the script stays silent.</p>
+        </div>
+      </div>
+
+      <div class="prose" style="margin-top:2.2rem">
+        <p>
+          <strong>Why window objects, not ids.</strong> The MRU stores window objects
+          rather than identifiers. Validating a stored object is sub-millisecond;
+          resolving an id back to a window through
+          <span class="ic">hs.window.get</span> re-enumerates every window on the
+          system and costs about <strong>57&nbsp;ms</strong> — which you would feel on
+          every close.
+        </p>
+      </div>
+
+      <div class="nums">
+        <div class="num"><b>203</b><span>lines of Lua, self-contained</span></div>
+        <div class="num"><b>1</b><span>case it acts on</span></div>
+        <div class="num"><b>60</b><span>windows kept in the MRU</span></div>
+        <div class="num"><b>~57<small>ms</small></b><span>saved per close by holding objects</span></div>
+        <div class="num"><b>0</b><span>flicker, by construction</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ config ══ -->
+  <section id="config">
+    <div class="shell">
+      <div class="head">
+        <p class="eyebrow">Configuration</p>
+        <h2>Five knobs, at the top of the file</h2>
+        <p>Edit and save — the config reloads itself.</p>
+      </div>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>M.enabled</td><td class="d">true</td><td class="d">Master switch, also bound to the hotkey.</td></tr>
+          <tr><td>M.sameSpaceOnly</td><td class="d">true</td><td class="d">Never focus a window on a hidden Space.</td></tr>
+          <tr><td>M.toggleMods / M.toggleKey</td><td class="d">⌘⌥⌃ + F</td><td class="d">The on/off hotkey. F for "follows".</td></tr>
+          <tr><td>M.skipFocusInto</td><td class="d">{}</td><td class="d">Apps never to land focus on, e.g. Finder.</td></tr>
+          <tr><td>M.skipTriggerFrom</td><td class="d">Hammerspoon, Spotlight, Alfred</td><td class="d">Apps whose closes are ignored entirely.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ install ══ -->
+  <section id="install" class="band">
+    <div class="shell">
+      <div class="head">
+        <p class="eyebrow">Install</p>
+        <h2>Needs Hammerspoon and one permission</h2>
+        <p>
+          macOS with Hammerspoon 0.9.90 or newer — it uses <span class="ic">hs.spaces</span> —
+          and Accessibility granted to Hammerspoon. Without that permission the script
+          is inert rather than broken.
+        </p>
+      </div>
+
+      <div class="paths">
+        <div class="path lead">
+          <p class="eyebrow">Recommended</p>
+          <h3>The installer</h3>
+          <p>Installs Hammerspoon via Homebrew if missing, backs up any existing <span class="ic">init.lua</span>, places the script, launches Hammerspoon, then reloads and verifies.</p>
+          <div class="cmd"><code id="c-inst">git clone https://github.com/romankhadka/focus-follows-close.git
+cd focus-follows-close
+./install.sh</code><button class="copy" data-copy="#c-inst" type="button">Copy</button></div>
+        </div>
+
+        <div class="path">
+          <p class="eyebrow">Manual</p>
+          <h3>Drop the file in</h3>
+          <p>Use it as your whole config, or require it from the one you have.</p>
+          <div class="cmd"><code id="c-man">brew install --cask hammerspoon
+mkdir -p ~/.hammerspoon
+cp focus-follows-close.lua ~/.hammerspoon/init.lua
+
+# or, alongside an existing config:
+cp focus-follows-close.lua ~/.hammerspoon/
+echo 'require("focus-follows-close")' >> ~/.hammerspoon/init.lua</code><button class="copy" data-copy="#c-man" type="button">Copy</button></div>
+        </div>
+
+        <div class="path">
+          <p class="eyebrow">Hands-off</p>
+          <h3>With Claude Code</h3>
+          <p>The repo ships a skill. Copy it into your global skills directory and ask Claude to <em>set up focus-follows-close</em> — it does the install and the verification.</p>
+          <div class="cmd"><code id="c-skill">mkdir -p ~/.claude/skills/focus-follows-close
+cp skills/focus-follows-close/SKILL.md \
+   ~/.claude/skills/focus-follows-close/</code><button class="copy" data-copy="#c-skill" type="button">Copy</button></div>
+        </div>
+
+        <div class="path">
+          <p class="eyebrow">Check</p>
+          <h3>Verify it took</h3>
+          <p>Open Notes and Safari with one window each, Notes frontmost. Close the Notes window — focus should land on Safari. From a shell:</p>
+          <div class="cmd"><code id="c-verify">hs -c "tostring(_G.FocusFollowsClose.enabled)"   # true
+hs -c "tostring(#_G.FocusFollowsClose.mru)"      # tracked windows
+hs -c "tostring(hs.accessibilityState())"        # true</code><button class="copy" data-copy="#c-verify" type="button">Copy</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="shell foot-row">
+    <a class="wordmark" href="/" style="font-size:.92rem">
+      <svg viewBox="0 0 32 32" aria-hidden="true" style="width:1.1rem;height:1.1rem"><rect width="32" height="32" rx="7" fill="var(--accent)"/><rect x="7" y="9" width="11" height="9" rx="2" fill="#fff" opacity=".45"/><rect x="14" y="15" width="11" height="9" rx="2" fill="#fff"/></svg>
+      focus-follows-close
+    </a>
+    <div class="foot-links">
+      <a href="https://github.com/romankhadka/focus-follows-close">GitHub</a>
+      <a href="https://www.hammerspoon.org/">Hammerspoon</a>
+      <a href="https://github.com/romankhadka/focus-follows-close/blob/main/focus-follows-close.lua">The source</a>
+    </div>
+  </div>
+  <div class="shell">
+    <p class="colophon">
+      The desktop above is a model of the decision the script makes, not a recording.
+      It runs the same three checks in the same order — windowless, app-match,
+      same-Space — so the cases where it does nothing are as real as the one where it acts.
+    </p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (s) => document.querySelector(s);
+  const desktop = $("#desktop"), mac = $("#mac"), mruEl = $("#mru"),
+        logEl = $("#log"), frontEl = $("#front-app"), enabledEl = $("#enabled");
+
+  // geometry is in percent of the desktop, so it scales with the frame
+  const SEED = [
+    { id: "n1", app: "Notes",    title: "Groceries",        x: 6,  y: 10, w: 34, h: 46, lines: 5 },
+    { id: "s1", app: "Safari",   title: "Hammerspoon docs", x: 30, y: 26, w: 46, h: 50, lines: 7 },
+    { id: "s2", app: "Safari",   title: "GitHub",           x: 46, y: 8,  w: 42, h: 44, lines: 6 },
+    { id: "t1", app: "Terminal", title: "~/code",           x: 16, y: 48, w: 40, h: 40, lines: 8 }
+  ];
+
+  let wins, mru, focused, front;
+
+  function reset() {
+    wins = SEED.map(w => ({ ...w, alive: true }));
+    // seeded so the story reads left to right: Terminal, then Safari, then Notes
+    mru = ["n1", "s2", "s1", "t1"];
+    focused = "n1";
+    front = "Notes";
+    setLog("idle", "Ready", "Close Notes' only window and watch where focus goes.");
+    render();
+  }
+
+  const byId = (id) => wins.find(w => w.id === id && w.alive);
+  const liveOf = (app) => wins.filter(w => w.alive && w.app === app);
+
+  function setLog(kind, title, body) {
+    logEl.className = "log " + kind;
+    logEl.innerHTML = `<b>${title}</b>${body}`;
+  }
+
+  function focus(id) {
+    const w = byId(id);
+    if (!w) return;
+    focused = id;
+    front = w.app;
+    mru = [id, ...mru.filter(x => x !== id)];
+  }
+
+  function close(id) {
+    const w = byId(id);
+    if (!w) return;
+    const app = w.app;
+
+    w.alive = false;
+    mru = mru.filter(x => x !== id);
+
+    const siblings = liveOf(app);
+
+    if (siblings.length) {
+      // macOS's own reflex. The script's windowless check fails here, so it
+      // returns immediately and lets the system do it.
+      const next = mru.find(x => byId(x) && byId(x).app === app) || siblings[0].id;
+      focus(next);
+      setLog("native", "macOS handled it",
+        `${app} still has a window, so the script's windowless check failed and it did nothing. macOS focused “${byId(next).title}”.`);
+    } else if (enabledEl.checked) {
+      const nextId = mru[0];
+      if (nextId) {
+        const n = byId(nextId);
+        focus(nextId);
+        setLog("act", "focus-follows-close acted",
+          `${app} went windowless, so focus moved to the next window in the MRU — “${n.title}” in ${n.app}.`);
+      } else {
+        focused = null; front = app;
+        setLog("idle", "Nothing left", "No other window to focus. Reset the desktop to try again.");
+      }
+    } else {
+      // The native behaviour this exists to fix.
+      focused = null;
+      front = app;
+      setLog("idle", "macOS left you nowhere",
+        `${app} has no windows but is still frontmost — look at the menu bar. Focus is on nothing, and your next keystroke has nowhere to go.`);
+    }
+    render();
+  }
+
+  function render() {
+    frontEl.textContent = front;
+
+    const alive = wins.filter(w => w.alive);
+    // paint back-to-front using MRU: least recent first
+    const order = [...alive].sort((a, b) => mru.indexOf(b.id) - mru.indexOf(a.id));
+
+    // retire any element whose window is gone, once its transition has run
+    desktop.querySelectorAll(".win").forEach(el => {
+      if (byId(el.dataset.id)) return;
+      el.classList.add("closing");
+      setTimeout(() => el.remove(), 220);
+    });
+    desktop.querySelectorAll(".no-focus-flag").forEach(el => el.remove());
+
+    order.forEach((w, depth) => {
+      let el = desktop.querySelector(`.win[data-id="${w.id}"]`);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "win";
+        el.dataset.id = w.id;
+        el.innerHTML =
+          `<span class="win-bar">
+             <button class="light red" type="button" data-close="${w.id}" aria-label="Close ${w.title}"></button>
+             <span class="light amber"></span><span class="light green"></span>
+             <span class="win-title">${w.title}</span>
+           </span>
+           <span class="win-body">${'<i></i>'.repeat(w.lines)}</span>
+           <span class="win-app">${w.app}</span>`;
+        el.style.left = w.x + "%"; el.style.top = w.y + "%";
+        el.style.width = w.w + "%"; el.style.height = w.h + "%";
+        desktop.appendChild(el);
+      }
+      el.style.zIndex = String(depth + 1);
+      el.classList.toggle("focused", w.id === focused);
+      el.classList.toggle("dim", w.id !== focused);
+      el.setAttribute("aria-current", w.id === focused ? "true" : "false");
+    });
+
+    if (!focused && alive.length) {
+      const flag = document.createElement("div");
+      flag.className = "no-focus-flag";
+      flag.textContent = `${front} is frontmost with no windows · focus: nothing`;
+      desktop.appendChild(flag);
+    }
+
+    // MRU panel
+    mruEl.innerHTML = mru.length
+      ? mru.map((id, i) => {
+          const w = byId(id);
+          if (!w) return "";
+          return `<li class="${i === 0 ? "top" : ""}"><span class="n">${i + 1}</span><span class="t">${w.title}</span><span class="a">${w.app}</span></li>`;
+        }).join("")
+      : `<li class="empty">No tracked windows.</li>`;
+  }
+
+  // clicks
+  desktop.addEventListener("click", (e) => {
+    const closer = e.target.closest("[data-close]");
+    if (closer) { e.stopPropagation(); close(closer.dataset.close); return; }
+    const win = e.target.closest(".win");
+    if (win && byId(win.dataset.id)) { focus(win.dataset.id); render(); }
+  });
+
+  // keys — bare letters, so the page can never eat ⌘W
+  mac.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "w") { e.preventDefault(); if (focused) close(focused); }
+    else if (k === "f") { e.preventDefault(); enabledEl.checked = !enabledEl.checked; announceToggle(); }
+    else if (k === "r") { e.preventDefault(); reset(); }
+    else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const live = wins.filter(w => w.alive).map(w => w.id);
+      if (!live.length) return;
+      const at = live.indexOf(focused);
+      const step = e.key === "ArrowRight" ? 1 : -1;
+      focus(live[(at + step + live.length) % live.length]);
+      render();
+    }
+  });
+
+  function announceToggle() {
+    setLog(enabledEl.checked ? "act" : "idle",
+      enabledEl.checked ? "Script enabled" : "Script disabled",
+      enabledEl.checked
+        ? "Closing an app's last window will now move focus to the MRU window."
+        : "This is stock macOS. Close an app's last window and focus goes nowhere.");
+  }
+  enabledEl.addEventListener("change", announceToggle);
+  $("#reset").addEventListener("click", reset);
+
+  mac.addEventListener("focus", () => mac.dataset.focused = "1");
+  mac.addEventListener("blur", () => mac.dataset.focused = "0");
+
+  $("#mac-clock").textContent =
+    new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date());
+
+  document.querySelectorAll(".copy").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const src = document.querySelector(btn.dataset.copy);
+      if (!src) return;
+      try {
+        await navigator.clipboard.writeText(src.innerText.trim());
+        const was = btn.textContent;
+        btn.textContent = "Copied"; btn.dataset.done = "1";
+        setTimeout(() => { btn.textContent = was; btn.dataset.done = "0"; }, 1600);
+      } catch { /* clipboard blocked */ }
+    });
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>
